@@ -7,68 +7,81 @@ Status: design only. Nothing is built yet. Last updated 2026-10-02.
 
 ## Overview
 
-A station is a folder of config files run by three containers. Someone clones
-the repo, edits the YAML, adds API keys and runs `docker compose up`.
+A station is a folder of config files run by stateless containers. The same
+images run under Docker Compose on any machine, or on a scale-to-zero container
+platform, with no code changes. Someone clones the repo, edits the YAML, adds
+API keys and runs `docker compose up`.
 
 ```
-                 station/ (YAML config, music, jingles)
-                              |
-+-----------------------------v------------------------------+
-| station app (one codebase, three roles)                    |
-|                                                            |
-|  Planner --> Producers --> Segment store --> "next?" API   |
-|  (schedule    (fetch -> script -> voice -> mix)  + admin UI|
-|   -> jobs)                                   + podcast RSS |
-+-----------------------------+------------------------------+
-                              | HTTP: "what plays next?"
-                     +--------v--------+
-                     |   Liquidsoap    |  falls back to repeats, then music
-                     +---+---------+---+
-                         |         |
-                    Icecast     RTMP -> YouTube Live
+        station/ (YAML config, music, jingles)
+                      |
+   clock --/tick-->  app (stateless HTTP handlers)
+                      |   planner -> producers -> HLS chunks
+                      |
+          +-----------+-----------+
+          |                       |
+      database              audio storage
+      (Postgres)               (S3 API)
+                                  |
+   listeners <-- CDN <-- /live.m3u8 + chunks
+                                  |
+                 YouTube relay (optional, always on)
+                 reads the HLS stream, pushes RTMP
 ```
 
-| Container | Job |
-|---|---|
-| Station app | Plans the schedule, generates segments, serves the next-item endpoint, admin page and podcast feed |
-| Liquidsoap | Plays audio continuously, asks the app what is next, handles crossfades and fallback |
-| Icecast | Serves the web listener stream |
+Nothing runs between requests. The live stream is an HLS playlist computed from
+the schedule and the clock, so there is no always-on player. The only
+always-on part is the optional relay that YouTube Live requires.
 
-Storage is one SQLite file plus a folder of audio on a volume. Postgres, Redis
-and a separate job queue are deliberately left out until a single station
-outgrows this.
+## Services
 
-## Station app
+Each role has a Compose form and a serverless form behind a standard interface,
+and the app does not know which one it is talking to.
 
-One codebase with three roles (planner, producers, server), which can be split
-into separate containers later without changing the config format.
+| Role | In Docker Compose | On serverless |
+|---|---|---|
+| App (stateless HTTP handlers) | One container | Scale-to-zero container service (Cloud Run, Fly Machines, Lambda container images) |
+| Audio storage (S3 API) | MinIO container | R2 or S3 |
+| Database (Postgres) | Postgres container | Neon or Supabase |
+| Clock | Cron container that calls `/tick` every minute | Cloud scheduler calling the same URL |
+| YouTube relay (optional) | ffmpeg container, always on | Stays on a VPS or always-on machine |
 
-- **Planner** reads the weekly grid and creates a job for each upcoming slot,
-  with a deadline some lead time before air (about 45 minutes for talk, 5 for
-  news).
-- **Producers** run each job through four steps: gather sources, write the
-  script, voice it, then mix in beds and jingles and normalise loudness. Each
-  finished segment goes into the segment store as an audio file plus metadata:
-  show, air window, sources used, transcript, cost.
-- **Server** reads the segment store and exposes three things:
-  - the next-item endpoint, which returns the segment due now. If it is not
-    ready, Liquidsoap moves down the fallback ladder: a repeat, then music,
-    then an emergency loop.
-  - the admin page.
-  - the podcast RSS feed for shows marked `podcast: true`.
+The target is serverless containers, not Workers-style functions, which cannot
+run under Compose without emulators and cannot run ffmpeg.
+
+## App endpoints
+
+- **`/tick`** is the planner. It reads the weekly grid, creates a job for each
+  upcoming slot with a deadline some lead time before air (about 45 minutes for
+  talk, 5 for news), and starts any jobs that are due.
+- **`/jobs/run`** produces one segment: gather sources, write the script, voice
+  it, mix in beds and jingles, normalise loudness, then upload the result as
+  HLS chunks with metadata (show, air window, sources used, transcript, cost).
+- **`/live.m3u8`** is the live playlist. It works out from the schedule and the
+  current time which chunks are on air. If a segment is not ready, it moves
+  down the fallback ladder: a repeat, then music, then an emergency loop.
+- **`/admin`** lists upcoming segments with a preview and a remove button.
+- **`/feed.xml`** is the podcast RSS feed for shows marked `podcast: true`.
+
+Jobs are rows in the database driven by the tick, so there is no queue service.
 
 ### Design principles
 
-- **The next-item endpoint is the whole contract between generation and
-  playout.** Liquidsoap knows nothing about LLMs, and the app never touches a
-  live audio stream, so either side can fail without taking the other off air.
-- **A segment is a finished file with an air window.** Repeats, podcasts and
-  previews are all different ways of reading the same store.
+- **The app is a pure function of the request plus database state.** Making
+  the clock an external caller of `/tick` is what removes the always-on
+  process.
+- **A segment is a finished set of chunks with an air window.** Live playout,
+  repeats, podcasts and previews are all different ways of reading the same
+  store.
 - **Content is generated ahead of air, not live.** "Real-time" news is a batch
   job that runs shortly before each bulletin.
-- **Talk scripts are written as scenes.** The voice provider caps the size of
-  a dialogue request (see the findings in PLAN.md), so each scene is one
-  request, and scene joins are natural points for a jingle or music bed.
+- **Nothing mixes live.** Each segment gets its fades and loudness set when it
+  is made, and every segment is encoded identically so chunks can follow each
+  other in one playlist.
+- **Talk scripts are written as scenes, one job per scene.** The voice provider
+  caps the size of a dialogue request (see the findings in PLAN.md), and a
+  scene-sized job also fits inside serverless request time limits (15 minutes
+  on Lambda, 60 on Cloud Run).
 
 ## Config
 
@@ -94,8 +107,9 @@ lead_time: 45m
 podcast: true
 ```
 
-Secrets (LLM key, voice key, YouTube stream key) live in an `.env` file, not in
-the station folder.
+Secrets (LLM key, voice key, YouTube stream key) and the storage and database
+URLs live in an `.env` file, not in the station folder. Switching between
+Compose and serverless is a change to those URLs.
 
 ## Extension points
 
@@ -124,40 +138,38 @@ station in another language.
   planner schedules repeats.
 - **AI disclosure**: a required station ident stating the hosts are
   AI-generated.
-- **Kill switch**: the admin page lists upcoming segments with a preview and a
-  remove button.
+- **Kill switch**: removing a segment in the admin page takes it out of the
+  playlist.
 
 ## Stack
 
-Beyond the containers and storage described in the overview:
+Beyond the services above, the app is TypeScript on Node, with ffmpeg in the
+image for mixing, loudness normalisation and HLS chunking.
 
-- Station app in TypeScript on Node.
-- ffmpeg for mixing and loudness normalisation.
+## Deployment
 
-## Hosting
+| Mode | What runs where | Suits |
+|---|---|---|
+| Single machine | Everything in Compose on one VPS or home server, including the relay | Self-hosters, development, a station that needs YouTube Live |
+| Serverless | App on a scale-to-zero container service, managed Postgres, R2, a cloud scheduler | Near-zero idle cost and a web audience of any size |
+| Hybrid | Serverless as above, plus a small always-on machine running only the relay | Serverless with YouTube Live |
 
-The core cannot run on serverless platforms, because playout is an always-on
-process holding open connections.
+Other parts are the same in every mode:
 
 | Part | Where | Why |
 |---|---|---|
-| Station app, Liquidsoap, Icecast | One VPS, about 2 vCPU / 4 GB, in Singapore, Tokyo or Hong Kong | Always-on process, a disk, steady outbound streaming; the YouTube video encode is the main CPU load |
 | Script writing | LLM API | Cost scales with hours of fresh content |
 | Voice | ElevenLabs or MiniMax API | The largest running cost |
-| Audio archive and podcast files | Cloudflare R2 | No egress fees |
 | Podcast to Spotify | The app's own RSS feed, submitted once | No podcast host needed |
-| Video listeners | YouTube Live | Free distribution at any audience size |
-| Monitoring | External uptime check on the stream URL, plus error tracking for the app | Dead air is the failure that matters most |
+| Monitoring | External check that `/live.m3u8` is advancing, plus error tracking for the app | Dead air is the failure that matters most |
 
-### Bandwidth
+### Trade-offs of HLS-only playout
 
-Direct Icecast listeners are the cost that scales with audience: 100 listeners
-at 128 kbps around the clock is roughly 4 TB a month. Two mitigations:
-
-- Send most listeners to YouTube and treat Icecast as secondary.
-- If the web audience grows, switch the web stream to HLS: Liquidsoap writes
-  audio chunks to R2 and a CDN serves them, so listener count stops affecting
-  the server.
-
-Server and LLM costs are fixed or scale with content hours, not audience, which
-is why the budget cap matters more than the choice of cloud.
+- Listeners are 10 to 30 seconds behind the clock, which is acceptable for
+  radio.
+- There are no live crossfades; fades are baked into each segment.
+- The first playlist request after idle is slow on serverless; a CDN in front
+  hides most of it.
+- Web listeners are served by the CDN, so audience size does not load the app.
+  Running costs scale with hours of fresh content, not audience, which is why
+  the budget cap matters more than the choice of cloud.

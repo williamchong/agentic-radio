@@ -15,7 +15,8 @@ Status: planning. Nothing is built yet. Last updated 2026-10-02.
 - Streams 24/7 to YouTube Live and a web stream, and publishes shows as
   podcasts (which is how they reach Spotify; Spotify takes no live streams).
 - Other people can clone the repo, edit config, add API keys and run their own
-  station in any language.
+  station in any language, on one machine with Docker Compose or on a
+  serverless platform.
 
 ## Non-goals
 
@@ -88,12 +89,16 @@ slot, so that strand would distinguish this station.
 
 1. **Test render**: a 2-minute two-host bulletin from today's HKO forecast and
    RTHK headlines, on ElevenLabs v4.
-2. **Bulletin format end to end**: fetch, script, voice, mix, store.
-3. **Playout**: Liquidsoap playing segments with music fallback, out to Icecast
-   and YouTube.
-4. **Planner and two-host talk format**, driven by `schedule.yaml`.
+2. **Bulletin format end to end** in Docker Compose: fetch, script, voice, mix,
+   upload as HLS chunks.
+3. **Playout**: the live playlist endpoint with music fallback, playable in a
+   browser.
+4. **Planner and two-host talk format**, driven by `schedule.yaml` and the
+   tick.
 5. **Reading format, admin page, podcast feed.**
-6. **Packaging**: example station config and setup docs.
+6. **YouTube relay** as an optional Compose service.
+7. **Packaging**: example station config, setup docs, and a serverless
+   deployment of the same images.
 
 ## Open questions
 
