@@ -1,4 +1,4 @@
-# AI Radio: Plan
+# Agentic Radio: Plan
 
 An open, configurable AI talk-radio system. A station is a folder of config
 files run by a small set of services. The first deployment is a Cantonese

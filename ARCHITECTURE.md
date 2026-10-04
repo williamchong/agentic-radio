@@ -1,4 +1,4 @@
-# AI Radio: Architecture
+# Agentic Radio: Architecture
 
 How the system is put together. For goals, programming, research findings and
 build order, see [PLAN.md](PLAN.md).
