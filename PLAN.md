@@ -6,7 +6,7 @@ station in the style of RTHK Radio 1 and 雷霆881.
 
 For how the system is put together, see [ARCHITECTURE.md](ARCHITECTURE.md).
 
-Status: planning. Nothing is built yet. Last updated 2026-10-02.
+Status: planning. Nothing is built yet. Last updated 2026-10-05.
 
 ## Goals
 
@@ -58,8 +58,26 @@ the rest, as real stations do overnight.
   roughly 7 minutes of Cantonese.
 - Single-voice requests on v4 take up to 10,000 characters.
 - List price is $0.08 per 1,000 characters for v4 and $0.04 for v4 Turbo.
-  Seven hours of fresh speech a day is about 3.5 million characters a month.
-- MiniMax is the cheaper comparison and has not been checked yet.
+  Seven hours of fresh speech a day is about 3.5 million characters a month,
+  so about $280 a month on v4 and $140 on v4 Turbo. Whether a Chinese
+  character bills as one character is not yet confirmed; check it against the
+  test render.
+- On 2026-10-05 the API had a 72% discount until Oct 12 ($0.022 and $0.011 per
+  1,000 characters), which makes it a cheap window for the test render.
+
+### Voice: MiniMax (checked 2026-10-05)
+
+- `speech-2.8-hd` and `speech-2.8-turbo` support Cantonese with
+  `language_boost: "Chinese,Yue"` and Cantonese system voices.
+- List price is $100 per million characters for HD and $60 for Turbo on the
+  international platform, and ¥3.50 and ¥2.00 per 10,000 on the China
+  platform.
+- MiniMax bills each Chinese character as two characters, so for Cantonese it
+  is not cheaper than ElevenLabs: about $420 to $700 a month at 3.5 million
+  characters internationally, or about $190 to $340 on the China platform.
+- There is no multi-speaker dialogue endpoint, so two-host talk means one
+  request per line and stitching. Requests take up to 10,000 characters.
+- Worth using only if it sounds clearly better than v4.
 
 ### Sources
 
